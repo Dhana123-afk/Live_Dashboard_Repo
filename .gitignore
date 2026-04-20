@@ -1,6 +1,6 @@
 venv/
 __pycache__/
 *.pyc
-credentials.json
 .env
 .streamlit/secrets.toml
+credentials.json
