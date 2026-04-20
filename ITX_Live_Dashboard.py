@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 # =========================
 # CONFIG
 # =========================
-SERVICE_ACCOUNT_FILE = "credentials.json"
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1NQSCTnd-YkdOGvWmdKj6tvwiezJUBe3lOG6WmqDL72U/edit?gid=501579247#gid=501579247"
 ASANA_SHEET_URL = "https://docs.google.com/spreadsheets/d/19LEVmTAH2mv0NtIp89OdIZM9M1IRtKXFgb5UrJviZpo/edit?gid=108310761#gid=108310761"
 META_WORKSHEET_NAME = "MetaAds_History"
@@ -31,8 +30,8 @@ SCOPES = [
 # GOOGLE SHEETS LOAD
 # =========================
 def get_client():
-    creds = Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE,
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
         scopes=SCOPES
     )
     return gspread.authorize(creds)
