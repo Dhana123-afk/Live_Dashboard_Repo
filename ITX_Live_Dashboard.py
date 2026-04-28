@@ -5,62 +5,70 @@ import matplotlib.pyplot as plt
 from google.oauth2.service_account import Credentials
 import plotly.express as px
 import plotly.graph_objects as go
-# =========================
-# CONFIG
-# =========================
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1NQSCTnd-YkdOGvWmdKj6tvwiezJUBe3lOG6WmqDL72U/edit?gid=501579247#gid=501579247"
-ASANA_SHEET_URL = "https://docs.google.com/spreadsheets/d/19LEVmTAH2mv0NtIp89OdIZM9M1IRtKXFgb5UrJviZpo/edit?gid=108310761#gid=108310761"
-META_WORKSHEET_NAME = "MetaAds_History"
-GA4_WORKSHEET_NAME = "GA4_Historical_Data"
-MAILERLITE_WORKSHEET_NAME = "MailerLite_History"
-MAILERLITE_CAMPAIGNS_WORKSHEET = "MailerLite_Campaigns"
-MAILERLITE_SUBSCRIBERS_WORKSHEET = "MailerLite_Subscribers"
+import base64
 
-ASANA_WORKSHEET_NAME = "Asana_History"
-# # If you have a page lookup tab, set it here
-# PAGE_LOOKUP_WORKSHEET = "page_lookup"   # change this if your lookup tab has another name
-# USE_PAGE_LOOKUP = False                 # change to True once your page lookup tab is ready
+# Configs
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1NQSCTnd-YkdOGvWmdKj6tvwiezJUBe3lOG6WmqDL72U/edit?gid=501579247#gid=501579247"
+ASANA_SHEET_URL = "https://docs.google.com/spreadsheets/d/19LEVmTAH2mv0NtIp89OdIZM9M1IRtKXFgb5UrJviZpo/edit?gid=87559203#gid=87559203"
+GA4_SHEET_URL = "https://docs.google.com/spreadsheets/d/17y3D6JS8wx9FoLSqt_D5Oo0YxDf_9P6e5f4AMHsr5Rk/edit?gid=188778766#gid=188778766"
+META_SHEET_URL = "https://docs.google.com/spreadsheets/d/1U3jMwHh-5_QvhHym_xnm5CtyMU3lodqa_rrpXGK3RN4/edit?gid=330376197#gid=330376197"
+
+META_WORKSHEET_NAME = "Meta_Ads_History" #Meta warehouse tab
+GA4_WORKSHEET_NAME = "GA4_History" #GA4 warehouse tab
+MAILERLITE_CAMPAIGNS_WORKSHEET = "MailerLite_Campaigns" #Mailerlite tabs
+MAILERLITE_SUBSCRIBERS_WORKSHEET = "MailerLite_Subscribers"
+ASANA_WORKSHEET_NAME = "Asana_History" #Asana warehouse tab
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/drive.readonly"
 ]
 
-# =========================
-# GOOGLE SHEETS LOAD
-# =========================
+#Load google services client 
+# def get_client():
+#     creds = Credentials.from_service_account_info(
+#         st.secrets["gcp_service_account"],
+#         scopes=SCOPES
+#     )
+#     return gspread.authorize(creds)
+
+import json
+
 def get_client():
+    with open("credentials.json", "r") as f:
+        service_account_info = json.load(f)
+
     creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
+        service_account_info,
         scopes=SCOPES
     )
     return gspread.authorize(creds)
+# Load the google sheet 
+import time
+import gspread
 
-# @st.cache_data
-# def load_sheet(sheet_url, worksheet_name):
-#     client = get_client()
-#     spreadsheet = client.open_by_url(sheet_url)
-#     worksheet = spreadsheet.worksheet(worksheet_name)
-#     data = worksheet.get_all_records()
-#     df = pd.DataFrame(data)
-    
-#     return df
-
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_sheet(sheet_url, worksheet_name):
     client = get_client()
-    worksheet = client.open_by_url(sheet_url).worksheet(worksheet_name)
 
-    all_values = worksheet.get_all_values()
+    for attempt in range(3):
+        try:
+            worksheet = client.open_by_url(sheet_url).worksheet(worksheet_name)
+            all_values = worksheet.get_all_values()
+            break
+        except gspread.exceptions.APIError as e:
+            if attempt == 2:
+                st.error(f"Google Sheets is temporarily unavailable for {worksheet_name}. Please refresh in a minute.")
+                return pd.DataFrame()
+            time.sleep(3)
+    else:
+        return pd.DataFrame()
 
     if not all_values:
         return pd.DataFrame()
 
     headers = all_values[0]
     rows = all_values[1:]
-
-    print(f"Worksheet: {worksheet_name}")
-    print("Header row raw:", headers)
 
     cleaned_headers = []
     seen = {}
@@ -82,29 +90,15 @@ def load_sheet(sheet_url, worksheet_name):
     max_len = len(cleaned_headers)
     normalized_rows = [row + [""] * (max_len - len(row)) for row in rows]
 
-    df = pd.DataFrame(normalized_rows, columns=cleaned_headers)
-    return df
+    return pd.DataFrame(normalized_rows, columns=cleaned_headers)
 
-# @st.cache_data
-# def load_sheet_asana(sheet_url, worksheet_name):
-#     client = get_client()
-#     spreadsheet = client.open_by_url(sheet_url)
-#     worksheet = spreadsheet.worksheet(worksheet_name)
-#     data = worksheet.get_all_records()
-#     df = pd.DataFrame(data)
-#     headers = worksheet.row_values(1)
-#     print("Headers:", headers)
-#     return df
-# =========================
-# CLEANING
-# =========================
+#Data Cleaning 
+#---Asana History
 def clean_asana_history(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df = df.replace("", pd.NA)
 
-    # -------------------------
-    # Convert dates
-    # -------------------------
+    #Convert the dates to date time format
     date_cols = [
         "created_at", "modified_at", "due_date",
         "completed_at", "last_modified_story_at", "extract_date"
@@ -114,9 +108,7 @@ def clean_asana_history(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
-    # -------------------------
-    # Clean text fields
-    # -------------------------
+    # Clean other fields
     text_cols = [
         "Brand", "Assigned to Member", "status",
         "Task Relationship", "Task Category", "Task Type", "Project"
@@ -126,9 +118,7 @@ def clean_asana_history(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].fillna("Unassigned").astype(str).str.strip()
 
-    # -------------------------
-    # Name Cleaning Logic
-    # -------------------------
+    #Function to clean the Name
     def clean_name(name):
         if pd.isna(name):
             return "Unassigned"
@@ -139,7 +129,7 @@ def clean_asana_history(df: pd.DataFrame) -> pd.DataFrame:
         if name.lower() == "a ranatunga":
             return "Anuki"
 
-        # Normal case → take first word
+        # Default case take the first name
         return name.split()[0]
 
     name_cols = ["last_modified_by", "Creator Member", "Assigned to Member"]
@@ -150,6 +140,101 @@ def clean_asana_history(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+#---Meta Ads History
+def clean_meta_ads_history(df: pd.DataFrame, page_lookup_df: pd.DataFrame = None) -> pd.DataFrame:
+    df = df.copy()
+    df = df.replace("", pd.NA)
+
+    int_cols = ["page_id", "clicks", "impressions"]
+    float_cols = [
+        "spend",
+        "cost_per_lead",
+        "cpm",
+        "ctr",
+        "frequency"
+    ]
+
+    for col in int_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    for col in float_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if "ad_id" in df.columns:
+        df["ad_id"] = df["ad_id"].astype(str).str.strip()
+
+    if "page_id" in df.columns:
+        df["page_id"] = df["page_id"].astype(str).str.strip()
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=True)
+
+    if "extract_date" in df.columns:
+        df["extract_date"] = pd.to_datetime(df["extract_date"], errors="coerce")
+
+    text_cols = [
+        "account_name", "campaign", "objective",
+        "object_type", "publisher_platform", "platform_position", "unique_key"
+    ]
+
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+
+    # Page lookup using page_id
+    if page_lookup_df is not None and not page_lookup_df.empty and "page_id" in df.columns:
+        page_lookup_df = page_lookup_df.copy()
+        page_lookup_df["Page ID"] = page_lookup_df["Page ID"].astype(str).str.strip()
+        page_lookup_df["Page Name"] = page_lookup_df["Page Name"].astype(str).str.strip()
+
+        df = df.merge(
+            page_lookup_df[["Page ID", "Page Name"]],
+            how="left",
+            left_on="page_id",
+            right_on="Page ID"
+        )
+
+    if "account_name" in df.columns:
+        df = df[df["account_name"].notna()]
+        df = df[df["account_name"].astype(str).str.strip() != ""]
+
+    rename_map = {
+        "Page Name": "Page_Name"
+    }
+
+    df = df.rename(columns=rename_map)
+
+    final_columns = [
+        "account_name",
+        "Page_Name",
+        "ad_id",
+        "campaign",
+        "objective",
+        "page_id",
+        "object_type",
+        "publisher_platform",
+        "platform_position",
+        "date",
+        "clicks",
+        "spend",
+        "leads",
+        "cost_per_lead",
+        "frequency",
+        "cpm",
+        "ctr",
+        "impressions",
+        "extract_date",
+        "unique_key"
+    ]
+
+    existing_cols = [c for c in final_columns if c in df.columns]
+    df = df[existing_cols]
+
+    return df
+
+#Roles to People maping
 CONTENT_WRITER_CATEGORIES = [
     "Caption Writing",
     "Content Writing Email/SMS",
@@ -216,6 +301,162 @@ ASSIGNEE_GROUP_MAP = {
     "Atheeq": "Ops",
     "Nafhan": "Ops",
 }
+
+#----GA4 History
+def clean_ga4_data(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df = df.replace("", pd.NA)
+
+    # standardize likely numeric columns
+    numeric_cols = [
+        "sessions",
+        "active_users",
+        "new_users",
+        "average_session_duration",
+        "average_interaction_time_per_session",
+        "event_count",
+        "screen_page_views",
+        "engaged_sessions"
+    ]
+
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # date parsing
+    possible_date_cols = ["date", "day"]
+    for col in possible_date_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    # account / brand cleanup
+    if "account_name" in df.columns:
+        df["account_name"] = df["account_name"].astype(str).str.strip()
+
+    return df
+
+#---MailerLite Campaigns
+def clean_mailerlite_campaigns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df = df.replace("", pd.NA)
+
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    if "extract_date" in df.columns:
+        df["extract_date"] = pd.to_datetime(df["extract_date"], errors="coerce")
+        
+    if "finished_at" in df.columns:
+        df["finished_at"] = pd.to_datetime(df["finished_at"], errors="coerce")
+        df["finished_date"] = df["finished_at"].dt.date
+        df["month"] = df["finished_at"].dt.strftime("%B")
+        df["month_num"] = df["finished_at"].dt.month
+
+    numeric_cols = [
+        "sent",
+        "deliveries_count",
+        "unsubscribes_count",
+        "hard_bounces_count",
+        "soft_bounces_count",
+        "opens_count",
+        "clicks_count",
+        "spam_count"
+    ]
+
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    percent_cols = ["open_rate", "click_rate", "click_to_open_rate", "delivery_rate", "unsubscribe_rate"]
+
+    for col in percent_cols:
+        if col in df.columns:
+            df[col] = parse_percent_series(df[col])
+
+    if "from_name" in df.columns:
+        df["from_name"] = df["from_name"].astype(str).str.strip()
+
+    return df
+
+#----Mailerlite Subscribers
+def clean_mailerlite_subscribers(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df = df.replace("", pd.NA)
+
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    if "extract_date" in df.columns:
+        df["extract_date"] = pd.to_datetime(df["extract_date"], errors="coerce")
+
+    if "from_name" in df.columns:
+        df["from_name"] = df["from_name"].astype(str).str.strip()
+
+    if "status" in df.columns:
+        df["status"] = df["status"].astype(str).str.strip()
+
+    return df
+
+
+# Helper Functions
+def parse_percent_series(series):
+    return (
+        series.astype(str)
+        .str.replace("%", "", regex=False)
+        .str.strip()
+        .replace({"": pd.NA, "nan": pd.NA, "None": pd.NA})
+        .pipe(pd.to_numeric, errors="coerce")
+    )
+
+def get_base64_image(image_path):
+    with open(image_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode()
+
+def format_duration(seconds):
+    if pd.isna(seconds):
+        return "0m 0s"
+
+    seconds = int(round(seconds))
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+
+    if hours > 0:
+        return f"{hours}h {minutes}m {secs}s"
+    return f"{minutes}m {secs}s"
+
+def load_page_lookup():
+    try:
+        df = pd.read_csv("data/page_lookup.csv", sep=None, engine="python")
+        df.columns = df.columns.str.strip()
+
+        df["Page ID"] = df["Page ID"].astype(str).str.strip()
+        df["Page Name"] = df["Page Name"].astype(str).str.strip()
+
+        return df
+
+    except Exception as e:
+        st.warning(f"Page lookup file error: {e}")
+        return pd.DataFrame()
+
+def safe_sum(series):
+    return pd.to_numeric(series, errors="coerce").fillna(0).sum()
+
+def safe_mean(series):
+    s = pd.to_numeric(series, errors="coerce")
+    s = s.dropna()
+    return s.mean() if not s.empty else 0
+
+def format_k(value, decimals=2):
+    if value >= 1_000_000:
+        return f"{value/1_000_000:.{decimals}f}M"
+    if value >= 1_000:
+        return f"{value/1_000:.{decimals}f}K"
+    return f"{value:.{decimals}f}"
 
 def render_asana_dashboard():
     col_title, col_logo = st.columns([6, 1])
@@ -316,8 +557,17 @@ def render_asana_dashboard():
     else:
         start_date, end_date = min_date, max_date
 
+    brand_series = (
+        df["Brand"]
+        .dropna()
+        .astype(str)
+        .str.split(",")   # split
+        .explode()        # separate rows
+        .str.strip()      # clean spaces
+    )
+
     brand_options = ["All"] + sorted(
-        [x for x in df["Brand"].dropna().unique().tolist() if str(x).strip() != ""]
+        [b for b in brand_series.dropna().unique().tolist() if str(b).strip() != ""]
     )
     selected_brand = st.sidebar.selectbox("Brand", brand_options, key="asana_brand")
 
@@ -326,15 +576,6 @@ def render_asana_dashboard():
     )
     selected_assignee = st.sidebar.selectbox("Assigned To", assignee_options, key="asana_assignee")
 
-    creator_options = ["All"] + sorted(
-        [x for x in df["Creator Member"].dropna().unique().tolist() if str(x).strip() != ""]
-    )
-
-    selected_creator = st.sidebar.selectbox(
-        "Creator Member",
-        creator_options,
-        key="asana_creator"
-    )
     # -------------------------
     # Apply filters
     # -------------------------
@@ -346,28 +587,34 @@ def render_asana_dashboard():
     ]
 
     if selected_brand != "All":
-        filtered_df = filtered_df[filtered_df["Brand"] == selected_brand]
+        filtered_df = filtered_df[
+            filtered_df["Brand"].str.contains(selected_brand, na=False)
+        ]
 
     if selected_assignee != "All":
         filtered_df = filtered_df[filtered_df["Assigned to Member"] == selected_assignee]
 
-    if selected_creator != "All":
-        filtered_df = filtered_df[
-            filtered_df["Creator Member"] == selected_creator
-        ]
-    # -------------------------
     # KPIs
-    # -------------------------
     total_tasks = len(filtered_df)
+
+    today = pd.Timestamp.today().normalize()
 
     completed_mask = filtered_df["status"].astype(str).str.strip().str.lower().isin([
         "completed",
         "completed on time",
         "complete"
     ])
-    completed_df = filtered_df[completed_mask].copy()
 
-    completion_rate = (len(completed_df) / total_tasks * 100) if total_tasks > 0 else 0
+    overdue_mask = (
+        filtered_df["due_date"].notna() &
+        (filtered_df["due_date"] < today) &
+        (~completed_mask)
+    )
+
+    overdue_tasks = overdue_mask.sum()
+    overdue_percentage = (overdue_tasks / total_tasks * 100) if total_tasks > 0 else 0
+
+    completed_df = filtered_df[completed_mask].copy()
 
     completed_df["cycle_time_days"] = (
         completed_df["completed_at"] - completed_df["created_at"]
@@ -376,537 +623,202 @@ def render_asana_dashboard():
     avg_cycle_time = completed_df["cycle_time_days"].dropna().mean()
     avg_cycle_time = 0 if pd.isna(avg_cycle_time) else avg_cycle_time
 
-    # -------------------------
-    # KPI Cards
+    # KPI cards
     # -------------------------
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total Tasks", f"{total_tasks}")
-    c2.metric("Completion Rate %", f"{completion_rate:.2f}%")
-    c3.metric("Avg Cycle Time Days", f"{avg_cycle_time:.2f}")
 
+    c1.metric("Total Tasks", f"{total_tasks}")
+    c2.metric("% Overdue Tasks", f"{overdue_percentage:.2f}%")
+    c3.metric("Avg Cycle Time Days", f"{avg_cycle_time:.2f}")
     st.divider()
 
-    col1, col2 = st.columns(2)
+    #col1, col2 = st.columns(2)
 
-    # -------- Chart 1: Status --------
-    with col1:
-        status_counts = (
-            filtered_df["status"]
-            .fillna("Unassigned")
-            .astype(str)
-            .str.strip()
-            .value_counts()
-            .reset_index()
-        )
-        status_counts.columns = ["Status", "Task Count"]
-
-        fig1 = px.pie(
-            status_counts,
-            names="Status",
-            values="Task Count",
-            title="Task Distribution by Status"
-        )
-
-        fig1.update_traces(
-            textinfo="percent+label",
-            textposition="inside"
-        )
-
-        fig1.update_layout(
-            showlegend=True,
-            legend_title="Status",
-            margin=dict(t=60, b=20, l=20, r=20),
-            height=420
-        )
-
-        st.plotly_chart(fig1, use_container_width=True)
-
-    # -------- Chart 2: Task Relationship --------
-    with col2:
-        task_rel_counts = (
-            filtered_df["Task Relationship"]
-            .fillna("Unassigned")
-            .astype(str)
-            .str.strip()
-            .value_counts()
-            .reset_index()
-        )
-        task_rel_counts.columns = ["Task Relationship", "Task Count"]
-
-        fig2 = px.pie(
-            task_rel_counts,
-            names="Task Relationship",
-            values="Task Count",
-            title="Task Distribution by Task Relationship"
-        )
-
-        fig2.update_traces(
-            textinfo="percent+label",
-            textposition="inside"
-        )
-
-        fig2.update_layout(
-            showlegend=True,
-            legend_title="Task Relationship",
-            margin=dict(t=60, b=20, l=20, r=20),
-            height=420
-        )
-
-        st.plotly_chart(fig2, use_container_width=True)
+    # Stacked Bar: Task Status by Assignee
     # -------------------------
-    # Bar Charts Side by Side
-    # -------------------------
-    col3, col4 = st.columns(2)
+    task_status_df = filtered_df.copy()
 
-    # -------- Chart 1: Tasks vs Brand --------
-    with col3:
-        brand_series = (
-            filtered_df["Brand"]
-            .fillna("Unassigned")
-            .astype(str)
-            .str.split(",")        # 🔥 split multiple brands
-            .explode()             # 🔥 turn into rows
-            .str.strip()           # clean spaces
-        )
+    today = pd.Timestamp.today().normalize()
 
-        brand_counts = (
-            brand_series[brand_series != ""]
-            .value_counts()
-            .reset_index()
-        )
+    completed_mask = task_status_df["status"].astype(str).str.strip().str.lower().isin([
+        "completed",
+        "completed on time",
+        "complete"
+    ])
 
-        brand_counts.columns = ["Brand", "Task Count"]
-        brand_counts = brand_counts.sort_values(by="Task Count", ascending=False)
+    overdue_mask = (
+        task_status_df["due_date"].notna() &
+        (task_status_df["due_date"] < today) &
+        (~completed_mask)
+    )
 
-        fig3 = px.bar(
-            brand_counts,
-            x="Brand",
-            y="Task Count",
-            title="Number of Tasks by Brand",
-            text="Task Count"
-        )
+    task_status_df["Task Status Group"] = "Not Completed"
+    task_status_df.loc[completed_mask, "Task Status Group"] = "Completed"
+    task_status_df.loc[overdue_mask, "Task Status Group"] = "Overdue"
 
-        fig3.update_layout(
-            xaxis_title="Brand",
-            yaxis_title="Number of Tasks",
-            margin=dict(t=60, b=100, l=20, r=20),
-            height=450,
-            xaxis_tickangle=-30
-        )
+    status_by_assignee = (
+        task_status_df
+        .groupby(["Assigned to Member", "Task Status Group"])
+        .size()
+        .reset_index(name="Task Count")
+    )
 
-        st.plotly_chart(fig3, use_container_width=True)
-    # -------- Chart 2: Tasks vs Task Category --------
-    with col4:
-        type_counts = (
-            filtered_df["Task Type"]
-            .fillna("Unassigned")
-            .astype(str)
-            .str.strip()
-            .value_counts()
-            .reset_index()
-        )
-        type_counts.columns = ["Task Type", "Task Count"]
+    fig_status_assignee = px.bar(
+        status_by_assignee,
+        x="Assigned to Member",
+        y="Task Count",
+        color="Task Status Group",
+        title="Task Count by Assigned Member and Status",
+        text="Task Count",
+        barmode="stack",
+        category_orders={
+            "Task Status Group": ["Overdue", "Not Completed", "Completed"]
+        }
+    )
 
-        fig4 = px.bar(
-            type_counts,
-            x="Task Type",
-            y="Task Count",
-            title="Number of Tasks by Task Type",
-            text="Task Count"
-        )
+    fig_status_assignee.update_layout(
+        xaxis_title="Assigned to Member",
+        yaxis_title="Task Count",
+        height=520,
+        margin=dict(t=60, b=120, l=20, r=20),
+        xaxis_tickangle=-30,
+        legend_title="Task Status"
+    )
 
-        fig4.update_layout(
-            xaxis_title="Task Type",
-            yaxis_title="Number of Tasks",
-            margin=dict(t=60, b=40, l=20, r=20),
-            height=420
-        )
-
-        st.plotly_chart(fig4, use_container_width=True)
+    st.plotly_chart(fig_status_assignee, use_container_width=True)
 
     # -------------------------
-    # Task Category Bar Chart
+    # Stacked Bar: Task Status by Task Category
     # -------------------------
-    category_df = filtered_df.copy()
+    st.subheader("Task Status by Task Category")
+    st.caption("Breakdown of completed, not completed, and overdue tasks by category")
 
-    category_df["Task Category Split"] = (
-        category_df["Task Category"]
+    task_cat_df = filtered_df.copy()
+
+    today = pd.Timestamp.today().normalize()
+
+    # Define masks
+    completed_mask = task_cat_df["status"].astype(str).str.strip().str.lower().isin([
+        "completed",
+        "completed on time",
+        "complete"
+    ])
+
+    overdue_mask = (
+        task_cat_df["due_date"].notna() &
+        (task_cat_df["due_date"] < today) &
+        (~completed_mask)
+    )
+
+    # Assign status groups
+    task_cat_df["Task Status Group"] = "Not Completed"
+    task_cat_df.loc[completed_mask, "Task Status Group"] = "Completed"
+    task_cat_df.loc[overdue_mask, "Task Status Group"] = "Overdue"
+
+    # Split Task Category (important because yours has multiple values)
+    task_cat_df["Task Category Split"] = (
+        task_cat_df["Task Category"]
         .fillna("Unassigned")
         .astype(str)
         .str.split(",")
     )
 
-    category_df = category_df.explode("Task Category Split")
-    category_df["Task Category Split"] = category_df["Task Category Split"].str.strip()
+    task_cat_df = task_cat_df.explode("Task Category Split")
+    task_cat_df["Task Category Split"] = task_cat_df["Task Category Split"].str.strip()
 
-    NON_OPS_CATEGORIES = set(
-        CONTENT_WRITER_CATEGORIES +
-        DESIGNER_CATEGORIES +
-        ANALYST_CATEGORIES
+    # Aggregate
+    status_by_category = (
+        task_cat_df
+        .groupby(["Task Category Split", "Task Status Group"])
+        .size()
+        .reset_index(name="Task Count")
     )
 
-    if selected_assignee != "All":
-        person_group = ASSIGNEE_GROUP_MAP.get(selected_assignee)
-
-        if person_group == "Content Writer":
-            category_df = category_df[
-                category_df["Task Category Split"].isin(CONTENT_WRITER_CATEGORIES)
-            ]
-
-        elif person_group == "Designer":
-            category_df = category_df[
-                category_df["Task Category Split"].isin(DESIGNER_CATEGORIES)
-            ]
-
-        elif person_group == "Analyst":
-            category_df = category_df[
-                category_df["Task Category Split"].isin(ANALYST_CATEGORIES)
-            ]
-
-        elif person_group == "Ops":
-            category_df = category_df[
-                ~category_df["Task Category Split"].isin(NON_OPS_CATEGORIES)
-            ]
-
-    category_counts = (
-        category_df["Task Category Split"]
-        .dropna()
-        .loc[lambda s: s != ""]
-        .value_counts()
-        .reset_index()
-    )
-
-    category_counts.columns = ["Task Category", "Task Count"]
-    category_counts = category_counts.sort_values(by="Task Count", ascending=False)
-
-    # Move "Unassigned" to the end
-    if "Unassigned" in category_counts["Task Category"].values:
-        unassigned_row = category_counts[category_counts["Task Category"] == "Unassigned"]
-        category_counts = category_counts[category_counts["Task Category"] != "Unassigned"]
-        category_counts = pd.concat([category_counts, unassigned_row], ignore_index=True)
-    fig5 = px.bar(
-        category_counts,
-        x="Task Category",
+    # Plot
+    fig_status_category = px.bar(
+        status_by_category,
+        x="Task Category Split",
         y="Task Count",
-        title="Number of Tasks by Task Category",
-        text="Task Count"
+        color="Task Status Group",
+        title="Task Count by Category and Status",
+        text="Task Count",
+        barmode="stack",
+        category_orders={
+            "Task Status Group": ["Overdue", "Not Completed", "Completed"]
+        }
     )
 
-    fig5.update_layout(
+    fig_status_category.update_layout(
         xaxis_title="Task Category",
-        yaxis_title="Number of Tasks",
+        yaxis_title="Task Count",
+        height=520,
         margin=dict(t=60, b=120, l=20, r=20),
-        height=500,
-        xaxis_tickangle=-35
+        xaxis_tickangle=-35,
+        legend_title="Task Status"
     )
 
-    st.plotly_chart(fig5, use_container_width=True)
-    # # -------------------------
-    # # Table
-    # # -------------------------
-    # preferred_cols = [
-    #     "task_id", "task_name", "created_at", "modified_at", "due_date",
-    #     "completed_at", "status", "last_modified_story_at", "last_modified_action",
-    #     "last_modified_by", "subtask_count", "Creator Member", "Assigned to Member",
-    #     "Task Relationship", "Task Category", "Task Type", "Project", "Brand",
-    #     "extract_date", "unique_key"
-    # ]
+    st.plotly_chart(fig_status_category, use_container_width=True)
 
-    # display_cols = [col for col in preferred_cols if col in filtered_df.columns]
+    # -------------------------
+    # Line Chart: Tasks Created vs Completed Over Time
+    # -------------------------
+    st.subheader("Tasks Created vs Completed Over Time")
+    st.caption("Daily trend of new tasks created compared with completed tasks")
 
-    # if "created_at" in filtered_df.columns:
-    #     filtered_df = filtered_df.sort_values(by="created_at", ascending=False)
+    trend_df = filtered_df.copy()
 
-    # st.dataframe(
-    #     filtered_df[display_cols],
-    #     use_container_width=True,
-    #     hide_index=True
-    # )
+    # Created tasks by date
+    created_trend = (
+        trend_df.dropna(subset=["created_at"])
+        .assign(Date=trend_df["created_at"].dt.date)
+        .groupby("Date")
+        .size()
+        .reset_index(name="Task Count")
+    )
 
-def clean_meta_ads_history(df: pd.DataFrame, page_lookup_df: pd.DataFrame = None) -> pd.DataFrame:
-    df = df.copy()
+    created_trend["Metric"] = "Tasks Created"
 
-    # replace empty strings
-    df = df.replace("", pd.NA)
+    # Completed tasks by date
+    completed_trend = (
+        trend_df.dropna(subset=["completed_at"])
+        .assign(Date=trend_df["completed_at"].dt.date)
+        .groupby("Date")
+        .size()
+        .reset_index(name="Task Count")
+    )
 
-    # type conversions
-    int_cols = [
-        "actions_lead",
-        "actions_post_engagement",
-        "actor_id",
-        "clicks",
-        "impressions",
-        "link_clicks",
-        "reach",
-        "unique_actions_link_click"
-    ]
+    completed_trend["Metric"] = "Tasks Completed"
 
-    float_cols = [
-        "amount_spent",
-        "cost_per_action_type_lead",
-        "cpm",
-        "ctr",
-        "frequency",
-        "outbound_clicks_ctr_outbound_click",
-        "spend"
-    ]
+    # Combine
+    trend_summary = pd.concat(
+        [created_trend, completed_trend],
+        ignore_index=True
+    )
 
-    for col in int_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
-
-    for col in float_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    if "ad_id" in df.columns:
-        df["ad_id"] = df["ad_id"].astype(str)
-
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce", format="%d/%m/%Y")
-
-    if "extract_date" in df.columns:
-        df["extract_date"] = pd.to_datetime(df["extract_date"], errors="coerce")
-
-    # merge page lookup if available
-    if page_lookup_df is not None and not page_lookup_df.empty:
-        df["actor_id"] = df["actor_id"].astype(str).str.strip()
-        page_lookup_df["Page ID"] = page_lookup_df["Page ID"].astype(str).str.strip()
-        page_lookup_df["Page Name"] = page_lookup_df["Page Name"].astype(str).str.strip()
-        
-        # print("Page lookup columns:")
-        # print(page_lookup_df.info())
-        # print(page_lookup_df[["Page ID", "Page Name"]].head())
-        
-        df = df.merge(
-            page_lookup_df[["Page ID", "Page Name"]],
-            how="left",
-            left_on="actor_id",
-            right_on="Page ID"
+    if not trend_summary.empty:
+        fig_trend = px.line(
+            trend_summary,
+            x="Date",
+            y="Task Count",
+            color="Metric",
+            markers=True,
+            title="Tasks Created vs Completed Trend"
         )
-        # # debug
-        # print("Merge check:")
-        # print(df[["actor_id", "Page ID", "Page Name"]].drop_duplicates().head(20))
 
-    # remove blank account rows
-    if "account_name" in df.columns:
-        df = df[df["account_name"].notna()]
-        df = df[df["account_name"].astype(str).str.strip() != ""]
+        fig_trend.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Task Count",
+            height=500,
+            margin=dict(t=60, b=80, l=20, r=20),
+            legend_title=""
+        )
 
-    # remove rows where both spend and impressions are zero
-    if "spend" in df.columns and "impressions" in df.columns:
-        df = df[~((df["spend"].fillna(0) == 0) & (df["impressions"].fillna(0) == 0))]
+        st.plotly_chart(fig_trend, use_container_width=True)
+    else:
+        st.info("No created or completed task dates available.")
+    
+   
 
-    # drop unwanted columns
-    cols_to_drop = ["actor_id", "Page ID", "objective", "actions_post_engagement"]
-    df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors="ignore")
-
-    # rename columns
-    rename_map = {
-        "Page Name": "Page_Name",
-        "account_name": "Account_Name",
-        "actions_lead": "Leads",
-        "ad_id": "Ad_ID",
-        "amount_spent": "Account_Spend",
-        "campaign": "Campaign_Name",
-        "campaign_objective": "Campaign_Objective",
-        "clicks": "Clicks(all)",
-        "cost_per_action_type_lead": "Cost_Per_Leads",
-        "cpm": "CPM (cost per 1,000 impressions)",
-        "ctr": "CTR (all)",
-        "date": "Day",
-        "frequency": "Frequency",
-        "impressions": "Impressions",
-        "link_clicks": "Link_clicks",
-        "outbound_clicks_ctr_outbound_click": "Outbound_CTR_(click-through rate)",
-        "platform_position": "Placement",
-        "reach": "Reach",
-        "spend": "Amount_Spent(USD)",
-        "unique_actions_link_click": "Unique_link_clicks"
-    }
-
-    df = df.rename(columns=rename_map)
-
-    # if no page lookup was used, create Page_Name from Account_Name so charts still work
-    if "Page_Name" not in df.columns and "Account_Name" in df.columns:
-        df["Page_Name"] = df["Account_Name"]
-
-    # reorder
-    final_column_order = [
-        "Account_Name", "Leads", "Page_Name", "Ad_ID", "Account_Spend",
-        "Campaign_Name", "Campaign_Objective", "Clicks(all)", "Cost_Per_Leads",
-        "CPM (cost per 1,000 impressions)", "CTR (all)", "Day", "Frequency",
-        "Impressions", "Link_clicks", "Outbound_CTR_(click-through rate)",
-        "Placement", "Reach", "Amount_Spent(USD)", "Unique_link_clicks",
-        "extract_date", "unique_key"
-    ]
-
-    existing_cols = [c for c in final_column_order if c in df.columns]
-    df = df[existing_cols]
-
-    return df
-
-def clean_ga4_data(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df = df.replace("", pd.NA)
-
-    # standardize likely numeric columns
-    numeric_cols = [
-        "sessions",
-        "active_users",
-        "new_users",
-        "average_session_duration",
-        "average_interaction_time_per_session",
-        "event_count",
-        "screen_page_views",
-        "engaged_sessions"
-    ]
-
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # date parsing
-    possible_date_cols = ["date", "day"]
-    for col in possible_date_cols:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-
-    # account / brand cleanup
-    if "account_name" in df.columns:
-        df["account_name"] = df["account_name"].astype(str).str.strip()
-
-    return df
-
-def clean_mailerlite_campaigns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df = df.replace("", pd.NA)
-
-    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
-
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
-    if "extract_date" in df.columns:
-        df["extract_date"] = pd.to_datetime(df["extract_date"], errors="coerce")
-        
-    if "finished_at" in df.columns:
-        df["finished_at"] = pd.to_datetime(df["finished_at"], errors="coerce")
-        df["finished_date"] = df["finished_at"].dt.date
-        df["month"] = df["finished_at"].dt.strftime("%B")
-        df["month_num"] = df["finished_at"].dt.month
-
-    numeric_cols = [
-        "sent",
-        "deliveries_count",
-        "unsubscribes_count",
-        "hard_bounces_count",
-        "soft_bounces_count",
-        "opens_count",
-        "clicks_count",
-        "spam_count"
-    ]
-
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    percent_cols = ["open_rate", "click_rate", "click_to_open_rate", "delivery_rate", "unsubscribe_rate"]
-
-    for col in percent_cols:
-        if col in df.columns:
-            df[col] = parse_percent_series(df[col])
-
-    if "from_name" in df.columns:
-        df["from_name"] = df["from_name"].astype(str).str.strip()
-
-    return df
-
-
-def clean_mailerlite_subscribers(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df = df.replace("", pd.NA)
-
-    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
-
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
-    if "extract_date" in df.columns:
-        df["extract_date"] = pd.to_datetime(df["extract_date"], errors="coerce")
-
-    if "from_name" in df.columns:
-        df["from_name"] = df["from_name"].astype(str).str.strip()
-
-    if "status" in df.columns:
-        df["status"] = df["status"].astype(str).str.strip()
-
-    return df
-
-# =========================
-# HELPERS
-# =========================
-def parse_percent_series(series):
-    return (
-        series.astype(str)
-        .str.replace("%", "", regex=False)
-        .str.strip()
-        .replace({"": pd.NA, "nan": pd.NA, "None": pd.NA})
-        .pipe(pd.to_numeric, errors="coerce")
-    )
-import base64
-
-def get_base64_image(image_path):
-    with open(image_path, "rb") as img_file:
-        return base64.b64encode(img_file.read()).decode()
-
-def format_duration(seconds):
-    if pd.isna(seconds):
-        return "0m 0s"
-
-    seconds = int(round(seconds))
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-
-    if hours > 0:
-        return f"{hours}h {minutes}m {secs}s"
-    return f"{minutes}m {secs}s"
-def load_page_lookup():
-    try:
-        df = pd.read_csv("data/page_lookup.csv", sep=None, engine="python")
-        df.columns = df.columns.str.strip()
-
-        # df["Page ID"] = pd.to_numeric(df["Page ID"], errors="coerce").astype("Int64")
-        # df["Page Name"] = df["Page Name"].astype(str).str.strip()
-
-        df["Page ID"] = df["Page ID"].astype(str).str.strip()
-        df["Page Name"] = df["Page Name"].astype(str).str.strip()
-
-        return df
-
-    except Exception as e:
-        st.warning(f"Page lookup file error: {e}")
-        return pd.DataFrame()
-
-def safe_sum(series):
-    return pd.to_numeric(series, errors="coerce").fillna(0).sum()
-
-def safe_mean(series):
-    s = pd.to_numeric(series, errors="coerce")
-    s = s.dropna()
-    return s.mean() if not s.empty else 0
-
-def format_k(value, decimals=2):
-    if value >= 1_000_000:
-        return f"{value/1_000_000:.{decimals}f}M"
-    if value >= 1_000:
-        return f"{value/1_000:.{decimals}f}K"
-    return f"{value:.{decimals}f}"
-
-# =========================
-# STREAMLIT APP
-# =========================
 def render_meta_ads_dashboard():
     col_title, col_logo = st.columns([6, 1])
 
@@ -950,7 +862,7 @@ def render_meta_ads_dashboard():
         )
     
     # load main data
-    raw_df = load_sheet(SHEET_URL,META_WORKSHEET_NAME)
+    raw_df = load_sheet(META_SHEET_URL,META_WORKSHEET_NAME)
 
     # load page lookup optionally
     page_lookup_df = load_page_lookup()
@@ -959,9 +871,12 @@ def render_meta_ads_dashboard():
     df = clean_meta_ads_history(raw_df, page_lookup_df)
     header_text = "Data unavailable"
 
-    if "Day" in df.columns and "extract_date" in df.columns:
+    data_date_str = "Unknown"
+    refresh_str = "Unknown"
 
-        max_data_date = pd.to_datetime(df["Day"], errors="coerce").max()
+    if "date" in df.columns and "extract_date" in df.columns:
+
+        max_data_date = pd.to_datetime(df["date"], errors="coerce").max()
         max_extract_date = pd.to_datetime(df["extract_date"], errors="coerce").max()
 
         data_date_str = max_data_date.strftime("%b %d, %Y") if pd.notna(max_data_date) else "Unknown"
@@ -987,7 +902,7 @@ def render_meta_ads_dashboard():
         unsafe_allow_html=True
     )
     # print(page_lookup_df.info())
-    # print(df.info())
+    print(df.info())
 
     if df.empty:
         st.error("No data available after cleaning.")
@@ -998,18 +913,22 @@ def render_meta_ads_dashboard():
     # =========================
     st.sidebar.header("Filters")
 
-    if "Day" in df.columns:
-        min_date = df["Day"].min()
-        max_date = df["Day"].max()
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-        date_range = st.sidebar.date_input(
-            "Date Range",
-            value=(min_date.date(), max_date.date())
-        )
+        min_date = df["date"].min()
+        max_date = df["date"].max()
 
-        if isinstance(date_range, tuple) and len(date_range) == 2:
-            start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
-            df = df[(df["Day"] >= start_date) & (df["Day"] <= end_date)]
+        if pd.notna(min_date) and pd.notna(max_date):
+            date_range = st.sidebar.date_input(
+                "Date Range",
+                value=(min_date.date(), max_date.date()),
+                key="meta_date_range"
+            )
+
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+                df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
 
     page_options = ["All"]
 
@@ -1029,69 +948,93 @@ def render_meta_ads_dashboard():
     # =========================
     # KPI CARDS
     # =========================
-    total_spend = safe_sum(df["Amount_Spent(USD)"]) if "Amount_Spent(USD)" in df.columns else 0
-    total_leads = safe_sum(df["Leads"]) if "Leads" in df.columns else 0
-    total_impressions = safe_sum(df["Impressions"]) if "Impressions" in df.columns else 0
-    avg_ctr = df["CTR (all)"].mean() * 100
-    avg_cpm = safe_mean(df["CPM (cost per 1,000 impressions)"]) if "CPM (cost per 1,000 impressions)" in df.columns else 0
-    avg_cpl = total_spend / total_leads if total_leads > 0 else 0
+    total_spend = safe_sum(df["spend"]) if "spend" in df.columns else 0
+    total_clicks = safe_sum(df["clicks"]) if "clicks" in df.columns else 0
+    total_impressions = safe_sum(df["impressions"]) if "impressions" in df.columns else 0
+    avg_ctr = safe_mean(df["ctr"]) if "ctr" in df.columns else 0
+    avg_cpm = safe_mean(df["cpm"]) if "cpm" in df.columns else 0
+    
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5 = st.columns(5)
 
     c1.metric("Total Spend", f"${format_k(total_spend)}")
-    c2.metric("Total Leads", format_k(total_leads, 0))
+    c2.metric("Total Clicks", format_k(total_clicks, 0))
     c3.metric("Total Impressions", format_k(total_impressions, 0))
     c4.metric("Average CTR", f"{avg_ctr:.2f}%")
-    c5.metric("Average CPM", f"{avg_cpm:.2f}")
-    c6.metric("Average CPL", f"{avg_cpl:.2f}")
-
+    c5.metric("Average CPM", f"${avg_cpm:.2f}")
     st.markdown("---")
 
     # =========================
     # CHARTS ROW 1
     # # =========================
 
-    left_col, right_col = st.columns([1.1, 0.9])
+    left_col, right_col = st.columns([1, 1])
 
     with left_col:
-        st.subheader("Lead Volume by Placement")
-        st.caption("Breakdown of total leads generated across ad placements")
+        st.subheader("Clicks by Publisher Platform")
+        st.caption("Breakdown of total clicks across Meta platforms")
 
-        if "Placement" in df.columns and "Leads" in df.columns:
-            placement_leads = (
-                df.groupby("Placement", dropna=False)["Leads"]
-                .sum()
-                .reset_index()
+        platform_map = {
+            "facebook": "Facebook",
+            "instagram": "Instagram",
+            "messenger": "Messenger",
+            "audience_network": "Audience Network",
+            "whatsapp": "WhatsApp",
+            "unknown": "Unknown"
+        }
+
+        if "publisher_platform" in df.columns and "clicks" in df.columns:
+            platform_df = df.copy()
+
+            platform_df["publisher_platform_clean"] = (
+                platform_df["publisher_platform"]
+                .fillna("unknown")
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .map(platform_map)
+                .fillna("Other")
             )
 
-            placement_leads["Placement"] = placement_leads["Placement"].fillna("Unknown").astype(str).str.strip()
-            placement_leads["Leads"] = pd.to_numeric(placement_leads["Leads"], errors="coerce").fillna(0)
+            platform_df["clicks"] = pd.to_numeric(
+                platform_df["clicks"],
+                errors="coerce"
+            ).fillna(0)
 
-            placement_leads = placement_leads[placement_leads["Leads"] > 0]
-            placement_leads = placement_leads.sort_values("Leads", ascending=False).head(6)
+            platform_clicks = (
+                platform_df.groupby("publisher_platform_clean", dropna=False)["clicks"]
+                .sum()
+                .reset_index()
+                .rename(columns={
+                    "publisher_platform_clean": "Publisher Platform",
+                    "clicks": "Clicks"
+                })
+            )
 
-            if not placement_leads.empty:
+            platform_clicks = platform_clicks[platform_clicks["Clicks"] > 0]
+            platform_clicks = platform_clicks.sort_values("Clicks", ascending=False)
+
+            if not platform_clicks.empty:
                 fig = px.pie(
-                    placement_leads,
-                    values="Leads",
-                    names="Placement",
+                    platform_clicks,
+                    values="Clicks",
+                    names="Publisher Platform",
                     hole=0.42
                 )
 
                 fig.update_traces(
                     textinfo="percent",
                     textfont_size=15,
-                    hovertemplate="<b>%{label}</b><br>Leads: %{value}<br>%{percent}<extra></extra>"
+                    hovertemplate="<b>%{label}</b><br>Clicks: %{value}<br>%{percent}<extra></extra>"
                 )
 
                 fig.update_layout(
                     template="plotly_dark",
                     height=420,
-                    width=520,
                     margin=dict(t=20, b=20, l=20, r=20),
                     font=dict(size=15),
                     legend=dict(
-                        title="Placement",
+                        title="Publisher Platform",
                         font=dict(size=13),
                         title_font=dict(size=14),
                         x=1.02,
@@ -1099,86 +1042,99 @@ def render_meta_ads_dashboard():
                     )
                 )
 
-                st.plotly_chart(fig, width="stretch")
+                st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("No placement data available.")
-
-
+                st.info("No click data available by publisher platform.")
+        else:
+            st.info("Required columns missing: publisher_platform, clicks")
+        
     with right_col:
-        st.subheader("CPM, CTR by Placement")
-        st.caption("Placement Performance Breakdown")
+        st.subheader("Clicks by Content Type")
+        st.caption("Breakdown of clicks by ad creative format")
 
-        required_cols = ["Placement", "CPM (cost per 1,000 impressions)", "CTR (all)", "Leads"]
+        if "object_type" in df.columns and "clicks" in df.columns:
+            object_df = df.copy()
 
-        if all(col in df.columns for col in required_cols):
-            placement_table = (
-                df.groupby("Placement", dropna=False)
-                .agg({
-                    "CPM (cost per 1,000 impressions)": "mean",
-                    "CTR (all)": "mean",
-                    "Leads": "sum"
-                })
+            object_map = {
+                "SHARE": "Boosted Posts",
+                "PHOTO": "Image Ads",
+                "STATUS": "Text Posts",
+                "VIDEO": "Video Ads"
+            }
+
+            object_df["object_type_clean"] = (
+                object_df["object_type"]
+                .fillna("Unknown")
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .map(object_map)
+                .fillna("Other")
+            )
+
+            object_df["clicks"] = pd.to_numeric(
+                object_df["clicks"],
+                errors="coerce"
+            ).fillna(0)
+
+            object_clicks = (
+                object_df.groupby("object_type_clean")["clicks"]
+                .sum()
                 .reset_index()
                 .rename(columns={
-                    "CPM (cost per 1,000 impressions)": "Avg CPM",
-                    "CTR (all)": "Avg CTR",
-                    "Leads": "Total Leads"
+                    "object_type_clean": "Content Type",
+                    "clicks": "Clicks"
                 })
             )
 
-            placement_table["Placement"] = placement_table["Placement"].fillna("Unknown").astype(str).str.strip()
-            placement_table["Avg CPM"] = pd.to_numeric(placement_table["Avg CPM"], errors="coerce").round(2)
-            placement_table["Avg CTR"] = (pd.to_numeric(placement_table["Avg CTR"], errors="coerce") * 100).round(2)
-            placement_table["Total Leads"] = pd.to_numeric(placement_table["Total Leads"], errors="coerce").fillna(0).astype(int)
+            object_clicks = object_clicks[object_clicks["Clicks"] > 0]
+            object_clicks = object_clicks.sort_values("Clicks", ascending=False)
 
-            placement_table = placement_table[placement_table["Total Leads"] > 0]
-            placement_table = placement_table.sort_values("Total Leads", ascending=False).head(10)
+            if not object_clicks.empty:
+                fig = px.pie(
+                    object_clicks,
+                    values="Clicks",
+                    names="Content Type",
+                    hole=0.42
+                )
 
-            fig_table = go.Figure(
-                data=[
-                    go.Table(
-                        header=dict(
-                            values=["Placement", "Avg CPM", "Avg CTR", "Total Leads"],
-                            fill_color="#1f1f1f",
-                            align="left",
-                            font=dict(color="white", size=14),
-                            height=34
-                        ),
-                        cells=dict(
-                            values=[
-                                placement_table["Placement"],
-                                placement_table["Avg CPM"],
-                                placement_table["Avg CTR"].astype(str) + "%",
-                                placement_table["Total Leads"]
-                            ],
-                            fill_color="#3a3a3a",
-                            align="left",
-                            font=dict(color="white", size=13),
-                            height=30
-                        )
+                fig.update_traces(
+                    textinfo="percent",
+                    textfont_size=15,
+                    hovertemplate="<b>%{label}</b><br>Clicks: %{value}<br>%{percent}<extra></extra>"
+                )
+
+                fig.update_layout(
+                    template="plotly_dark",
+                    height=420,
+                    margin=dict(t=20, b=20, l=20, r=20),
+                    font=dict(size=15),
+                    legend=dict(
+                        title="Content Type",
+                        font=dict(size=13),
+                        title_font=dict(size=14),
+                        x=1.02,
+                        y=0.5
                     )
-                ]
-            )
+                )
 
-            fig_table.update_layout(
-                template="plotly_dark",
-                height=420,
-                margin=dict(t=20, b=20, l=0, r=0)
-            )
+                st.plotly_chart(fig, use_container_width=True)
 
-            st.plotly_chart(fig_table, width="stretch")
+            else:
+                st.info("No data available for object types.")
         else:
-            st.info("Required columns missing for placement table.")
+            st.info("Required columns missing: object_type, clicks")
+    
 
-    left_col, right_col = st.columns([0.9, 1.1])
+    left_col, right_col = st.columns([0.7, 1.1])
 
     with left_col:
         st.subheader("Budget Efficiency")
         st.caption("Impressions per $1 spent")
 
-        if "Impressions" in df.columns and "Amount_Spent(USD)" in df.columns:
-            total_impressions = pd.to_numeric(df["Impressions"], errors="coerce").fillna(0).sum()
-            total_spend = pd.to_numeric(df["Amount_Spent(USD)"], errors="coerce").fillna(0).sum()
+        if "impressions" in df.columns and "spend" in df.columns:
+            total_impressions = pd.to_numeric(df["impressions"], errors="coerce").fillna(0).sum()
+            total_spend = pd.to_numeric(df["spend"], errors="coerce").fillna(0).sum()
 
             impressions_per_dollar = total_impressions / total_spend if total_spend > 0 else 0
 
@@ -1187,15 +1143,9 @@ def render_meta_ads_dashboard():
                     mode="gauge+number",
                     value=impressions_per_dollar,
                     number={"valueformat": ",.0f"},
-                    title={"text": ""},
                     gauge={
                         "axis": {"range": [0, max(impressions_per_dollar * 1.3, 1000)]},
                         "bar": {"color": "#00b300", "thickness": 0.35},
-                        "steps": [
-                            {"range": [0, max(impressions_per_dollar * 0.4, 300)], "color": "#2a2a2a"},
-                            {"range": [max(impressions_per_dollar * 0.4, 300), max(impressions_per_dollar * 0.8, 700)], "color": "#3a3a3a"},
-                            {"range": [max(impressions_per_dollar * 0.8, 700), max(impressions_per_dollar * 1.3, 1000)], "color": "#4a4a4a"}
-                        ]
                     }
                 )
             )
@@ -1207,128 +1157,99 @@ def render_meta_ads_dashboard():
                 font=dict(size=15)
             )
 
-            st.plotly_chart(gauge_fig, width="stretch")
+            st.plotly_chart(gauge_fig, use_container_width=True)
         else:
-            st.info("Required columns missing for Budget Efficiency.")
-
+            st.info("Required columns missing: impressions, spend")
 
     with right_col:
         st.subheader("Creative Fatigue")
         st.caption("CTR by Frequency Bucket")
 
-        if "Frequency" in df.columns and "CTR (all)" in df.columns:
+        if "frequency" in df.columns and "ctr" in df.columns:
             fatigue_df = df.copy()
 
-            fatigue_df["Frequency"] = pd.to_numeric(fatigue_df["Frequency"], errors="coerce")
-            fatigue_df["CTR (all)"] = pd.to_numeric(fatigue_df["CTR (all)"], errors="coerce")
+            fatigue_df["frequency"] = pd.to_numeric(fatigue_df["frequency"], errors="coerce")
+            fatigue_df["ctr"] = pd.to_numeric(fatigue_df["ctr"], errors="coerce")
 
-            fatigue_df["Frequency_Bucket"] = pd.cut(
-                fatigue_df["Frequency"],
+            fatigue_df["Frequency Bucket"] = pd.cut(
+                fatigue_df["frequency"],
                 bins=[0, 2, 3, 100],
                 labels=["1-2x", "2-3x", "3x+"],
                 include_lowest=True
             )
 
             fatigue_table = (
-                fatigue_df.groupby("Frequency_Bucket", dropna=False)["CTR (all)"]
+                fatigue_df.groupby("Frequency Bucket", dropna=False)["ctr"]
                 .mean()
                 .reset_index()
             )
-            fatigue_table = fatigue_table[fatigue_table["Frequency_Bucket"].notna()]
-            fatigue_table["CTR %"] = (fatigue_table["CTR (all)"] * 100).round(2)
-            fatigue_table = fatigue_table[["Frequency_Bucket", "CTR %"]]
 
-            # style matrix-like colors
-            def color_ctr(val):
-                if pd.isna(val):
-                    return "background-color: #4a4a4a; color: white;"
-                elif val >= 5:
-                    return "background-color: #5b8f5b; color: white;"
-                elif val >= 2:
-                    return "background-color: #6f8f6f; color: white;"
-                else:
-                    return "background-color: #a85c5c; color: white;"
+            fatigue_table = fatigue_table[fatigue_table["Frequency Bucket"].notna()]
+            fatigue_table["CTR %"] = fatigue_table["ctr"].round(2)
+            fatigue_table = fatigue_table[["Frequency Bucket", "CTR %"]]
 
-            styled_matrix = (
-                fatigue_table.style
-                .format({"CTR %": "{:.2f}%"})
-                .map(color_ctr, subset=["CTR %"])
-                .set_properties(**{
-                    "background-color": "#3a3a3a",
-                    "color": "white",
-                    "border-color": "#5a5a5a",
-                    "text-align": "center"
-                })
-                .set_table_styles([
-                    {"selector": "th", "props": [("background-color", "#2f2f2f"), ("color", "white"), ("font-size", "14px")]},
-                    {"selector": "td", "props": [("font-size", "14px"), ("padding", "8px")]},
-                    {"selector": "table", "props": [("width", "100%"), ("border-collapse", "collapse")]}
-                ])
-            )
-
-            st.dataframe(fatigue_table, width="stretch", hide_index=True)
+            st.dataframe(fatigue_table, use_container_width=True, hide_index=True)
         else:
-            st.info("Required columns missing for Creative Fatigue.")
-    
-    st.markdown("---")
-
+            st.info("Required columns missing: frequency, ctr")
+    # -------------------------
+    # Leads Over Time
+    # -------------------------
     st.subheader("Leads Over Time")
     st.caption("Daily lead trend over the selected period")
 
-    required_cols = ["Day", "Leads"]
-
-    if all(col in df.columns for col in required_cols):
+    if "date" in df.columns and "leads" in df.columns:
         leads_df = df.copy()
 
-        leads_df["Day"] = pd.to_datetime(leads_df["Day"], errors="coerce")
-        leads_df["Leads"] = pd.to_numeric(leads_df["Leads"], errors="coerce").fillna(0)
+        leads_df["date"] = pd.to_datetime(leads_df["date"], errors="coerce")
+        leads_df["leads"] = pd.to_numeric(leads_df["leads"], errors="coerce").fillna(0)
 
-        leads_df = leads_df[leads_df["Day"].notna()]
+        leads_df = leads_df[leads_df["date"].notna()]
 
         leads_summary = (
-            leads_df.groupby("Day", as_index=False)["Leads"]
+            leads_df.groupby("date", as_index=False)["leads"]
             .sum()
-            .sort_values("Day")
+            .sort_values("date")
+            .rename(columns={"date": "Date", "leads": "Total Leads"})
         )
 
-        fig_leads = px.line(
-            leads_summary,
-            x="Day",
-            y="Leads",
-            markers=False
-        )
+        if not leads_summary.empty:
+            fig_leads = px.line(
+                leads_summary,
+                x="Date",
+                y="Total Leads",
+                markers=False
+            )
 
-        fig_leads.update_traces(
-            line=dict(color="#2aa4ff", width=3)
-        )
+            fig_leads.update_traces(
+                line=dict(color="#2aa4ff", width=3)
+            )
 
-        fig_leads.update_layout(
-            template="plotly_dark",
-            height=450,
-            margin=dict(t=20, b=20, l=20, r=20),
-            xaxis_title="Date",
-            yaxis_title="Total Leads",
-            showlegend=False,
-            font=dict(size=13)
-        )
+            fig_leads.update_layout(
+                height=520,
+                margin=dict(t=40, b=40, l=20, r=20),
+                xaxis_title="Date",
+                yaxis_title="Total Leads",
+                showlegend=False,
+                font=dict(size=13)
+            )
 
-        fig_leads.update_xaxes(
-            showgrid=True,
-            gridcolor="rgba(255,255,255,0.2)",
-            griddash="dot"
-        )
+            fig_leads.update_xaxes(
+                showgrid=True,
+                gridcolor="rgba(120,120,120,0.25)",
+                griddash="dot"
+            )
 
-        fig_leads.update_yaxes(
-            showgrid=True,
-            gridcolor="rgba(255,255,255,0.2)",
-            griddash="dot"
-        )
+            fig_leads.update_yaxes(
+                showgrid=True,
+                gridcolor="rgba(120,120,120,0.25)",
+                griddash="dot"
+            )
 
-        st.plotly_chart(fig_leads, width="stretch")
-
+            st.plotly_chart(fig_leads, use_container_width=True)
+        else:
+            st.info("No lead data available for the selected period.")
     else:
-        st.info("Required columns missing: Day, Leads")
-
+        st.info("Required columns missing: date, leads")
 def render_ga4_dashboard():
     col_title, col_logo = st.columns([6, 1])
 
@@ -1371,20 +1292,21 @@ def render_ga4_dashboard():
         )
 
 
-    raw_df = load_sheet(SHEET_URL,GA4_WORKSHEET_NAME)
+    raw_df = load_sheet(GA4_SHEET_URL,GA4_WORKSHEET_NAME)
     df = clean_ga4_data(raw_df)
+    data_date_str = "Unknown"
+    refresh_str = "Unknown"
+
     data_date_str = "Unknown"
     refresh_str = "Unknown"
 
     if "date" in df.columns:
         max_data_date = pd.to_datetime(df["date"], errors="coerce").max()
-        if pd.notna(max_data_date):
-            data_date_str = max_data_date.strftime("%b %d, %Y")
+        data_date_str = max_data_date.strftime("%b %d, %Y") if pd.notna(max_data_date) else "Unknown"
 
     if "extract_date" in df.columns:
         max_extract_date = pd.to_datetime(df["extract_date"], errors="coerce").max()
-        if pd.notna(max_extract_date):
-            refresh_str = max_extract_date.strftime("%b %d, %Y")
+        refresh_str = max_extract_date.strftime("%b %d, %Y") if pd.notna(max_extract_date) else "Unknown"
             
     if df.empty:
         st.error("No GA4 data available after cleaning.")
@@ -1577,10 +1499,6 @@ def render_ga4_dashboard():
         else:
             st.info("Required columns missing")
 
-
-    # =========================
-    # RIGHT → DONUT (Sessions)
-    # =========================
     with right_col:
         st.subheader("Traffic by Channel")
         st.caption("Sessions breakdown by acquisition channel")
@@ -2338,22 +2256,6 @@ def render_mailerlite_dashboard():
     )
 
     plot_top_open_rate_campaigns_donut(top_open_rate_df)
-    
-# def main():
-#     st.set_page_config(page_title="Marketing Dashboard", layout="wide")
-
-#     meta_tab, ga4_tab, mailer_tab = st.tabs(
-#         ["Meta Ads Dashboard", "GA4 Dashboard", "MailerLite Dashboard"]
-#     )
-
-#     with meta_tab:
-#         render_meta_ads_dashboard()
-
-#     with ga4_tab:
-#         render_ga4_dashboard()
-
-#     with mailer_tab:
-#         render_mailerlite_dashboard()
 
 def main():
     import streamlit as st
