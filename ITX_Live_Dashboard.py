@@ -25,24 +25,25 @@ SCOPES = [
 ]
 
 #Load google services client 
+def get_client():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=SCOPES
+    )
+    return gspread.authorize(creds)
+
+import json
+
 # def get_client():
+#     with open("credentials.json", "r") as f:
+#         service_account_info = json.load(f)
+
 #     creds = Credentials.from_service_account_info(
-#         st.secrets["gcp_service_account"],
+#         service_account_info,
 #         scopes=SCOPES
 #     )
 #     return gspread.authorize(creds)
 
-import json
-
-def get_client():
-    with open("credentials.json", "r") as f:
-        service_account_info = json.load(f)
-
-    creds = Credentials.from_service_account_info(
-        service_account_info,
-        scopes=SCOPES
-    )
-    return gspread.authorize(creds)
 # Load the google sheet 
 import time
 import gspread
