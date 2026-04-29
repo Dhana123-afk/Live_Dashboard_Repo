@@ -595,6 +595,10 @@ def render_asana_dashboard():
     if selected_assignee != "All":
         filtered_df = filtered_df[filtered_df["Assigned to Member"] == selected_assignee]
 
+    st.sidebar.divider()
+
+    if st.sidebar.button("Download Dashboard View"):
+        st.sidebar.info("Press Ctrl + P, then choose 'Save as PDF'.")
     # KPIs
     total_tasks = len(filtered_df)
 
@@ -945,6 +949,11 @@ def render_meta_ads_dashboard():
     if df.empty:
         st.warning("No data after applying filters.")
         st.stop()
+
+    st.sidebar.divider()
+
+    if st.sidebar.button("Download Dashboard View"):
+        st.sidebar.info("Press Ctrl + P, then choose 'Save as PDF' to download this dashboard view.")
     st.markdown("---")
     # =========================
     # KPI CARDS
@@ -1364,7 +1373,9 @@ def render_ga4_dashboard():
     if df.empty:
         st.warning("No GA4 data after applying filters.")
         return
-    
+    st.sidebar.divider()
+    if st.sidebar.button("Download Dashboard View"):
+        st.sidebar.info("Press Ctrl + P, then choose 'Save as PDF' to download this dashboard view.")
     # -------------------------
     # KPI calculations (CORRECTED)
     # -------------------------
@@ -2199,7 +2210,10 @@ def render_mailerlite_dashboard():
     if campaigns_df.empty and subscribers_df.empty:
         st.warning("No MailerLite data after applying filters.")
         return
-
+    st.sidebar.divider()
+    
+    if st.sidebar.button("Download Dashboard View"):
+        st.sidebar.info("Press Ctrl + P, then choose 'Save as PDF' to download this dashboard view.")
     # -------------------------
     # KPI cards
     # -------------------------
